@@ -8,12 +8,20 @@
 
 ---
 
+## The Problem
+
+A Windows 11 IoT Enterprise LTSC 2024 desktop ("DeskPC") hadn't taken a cumulative update in 6+ months. KB5079473 (March 2026 security update) failed repeatedly. Every in-place upgrade attempt bounced with `0x80070003`. The machine was stuck on build 26100.4946, unpatched since October 2025.
+
+What made this interesting: the machine *ran fine*. It booted. It worked. No crashes. Just updates, silently failing, every time. Six months of failure logs that nobody had read.
+
+The question was simple: why won't it update? The answer took two days to find.
+
 ## The Machine
 
-A Windows 11 IoT Enterprise LTSC 2024 desktop ("DeskPC") that had been through more than any install should survive:
+This wasn't a stock install. It had been through more than any install should survive:
 
-- **ServerRdsh -> LTSC edition migration** via registry hack (leaving 3,879 zombie server packages)
-- **MBR -> GPT disk conversion** (which silently mislabeled the EFI partition)
+- **ServerRdsh → LTSC edition migration** via registry hack (leaving 3,879 zombie server packages)
+- **MBR → GPT disk conversion** (which silently mislabeled the EFI partition)
 - **Multiple failed in-place upgrade attempts** and legacy boot misadventures
 - **90,830 power cycles** on the boot SSD
 - **Dead WinRE**, broken BCD, and a 128 GB pagefile "from crazy needs before"
@@ -22,11 +30,7 @@ As the user put it:
 
 > *"This windows install has marched through several editions with it once being ServerRdsh at one point, then force-migrated to LTSC via registry trick. And several partition master migrations as well, with the disk once being MBR in the beginning and changed to GPT somehow in the middle where the WinRE kicked the bucket in between. It's a crazy install."*
 
-The machine was valuable — peak Windows compute for the homelab, and the ultimate test of agentic abilities. Clean install was not on the table.
-
-## The Problem
-
-The session started with SSD diagnostics and disk cleanup, but the real challenge emerged when checking the Windows Update logs: **every cumulative update had been failing for 6+ months**. KB5079473 (March 2026 security update) failed repeatedly. In-place upgrade attempts bounced with `0x80070003`. The machine was stuck on build 26100.4946, unpatched since October 2025.
+The machine was valuable — peak Windows compute for the homelab. Clean install was not on the table.
 
 ## The Journey
 
@@ -76,9 +80,9 @@ After fixing the ESP GUID, staging failed with a new error — CBS couldn't find
 ![96% complete — the update finalizing during reboot](archive/images/boot_check.jpg)
 *96% complete. Past where it always crashed. No BSOD, no rollback.*
 
-With all four fixes applied, KB5079473 staged, installed, rebooted, finalized the AdvancedInstallers, and **persisted**. Then KB5085516 (the emergency fix for KB5079473's sign-in bug) installed on the next cycle.
+With all four fixes applied, KB5079473 staged, installed, rebooted, finalized the AdvancedInstallers, and **persisted**. Then KB5085516, KB5083532, and KB5066131 followed — three more updates in the next cycle, all installing without intervention.
 
-Build: 26100.4946 -> **26100.8039**. Two cumulative updates in one night, after 6 months of nothing.
+Build: **26100.4946** → **26100.8039**. Months of accumulated updates, cleared in one night.
 
 ### The IPKVM
 
@@ -148,38 +152,59 @@ Three unrelated historical decisions — a disk conversion, an edition hack, and
 
 ### For Windows users
 
-1. **After any MBR-to-GPT conversion, verify the EFI partition GUID.** Run `Get-Partition` in PowerShell or `diskpart list partition`. The EFI System Partition must be type `{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}`, not `{ebd0a0a2}` (Basic Data). This silently breaks `bcdedit` and Windows Update servicing.
+1. **After any MBR-to-GPT conversion, verify the EFI partition GUID.** Run `Get-Partition` in PowerShell or `diskpart list partition`. The EFI System Partition must be type `{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}`, not `{ebd0a0a2}` (Basic Data). This silently breaks `bcdedit` and Windows Update servicing — with no error messages pointing to the real cause.
 
-2. **Windows edition migration via registry leaves deep scars.** Changing `EditionID` from ServerRdsh to IoTEnterpriseS doesn't remove the server packages — it orphans 3,879 of them. CBS can't transition packages that belong to a different edition. There is no clean path back.
+2. **Windows edition migration via registry leaves deep scars.** Changing `EditionID` from ServerRdsh to IoTEnterpriseS doesn't remove the server packages — it orphans 3,879 of them. CBS can't transition packages that belong to a different edition. There is no clean path back, and the corruption may not surface until you try to update months later.
 
-3. **VBS on Windows 11 24H2 overrides BCD.** `bcdedit /set hypervisorlaunchtype off` is not enough. VBS is enforced via `HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\EnableVirtualizationBasedSecurity`. You must disable it in the registry AND BCD, or the hypervisor still loads. **Note:** VBS, HVCI, and Credential Guard are important security features. Disabling them should be a temporary diagnostic step, not a permanent solution. Plan to restore them after the underlying issue is resolved (e.g., via in-place upgrade).
+3. **VBS on Windows 11 24H2 overrides BCD.** `bcdedit /set hypervisorlaunchtype off` is not enough. VBS is enforced via `HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\EnableVirtualizationBasedSecurity`. You must disable it in the registry AND BCD, or the hypervisor still loads. **Note:** VBS, HVCI, and Credential Guard are important security features. Disabling them should be a temporary diagnostic step, not a permanent solution.
 
 4. **DISM RestoreHealth can report success while CBS still fails.** The tool verifies file integrity but not logical consistency of package dependency chains. "No component store corruption detected" doesn't mean updates will install.
 
-5. **The reboot IS the update.** The percentage bar in Windows Update is just staging. The real work — AdvancedInstallers, driver registration, BCD mirroring — happens during the reboot's boot phase. A crash during this 2-minute window rolls back the entire update.
+5. **The reboot IS the update.** The percentage bar in Windows Update is just staging. The real work — AdvancedInstallers, driver registration, BCD mirroring — happens during the reboot's boot phase. A crash during this 2-minute window rolls back the entire update. This is why "stuck at 93%" is not stuck — it's about to do the hard part.
 
-### For agentic AI users
+6. **Silent failures accumulate.** This machine had been failing updates for 6+ months with no visible symptoms. Windows Update's failure mode is quiet rollback, not a crash or an alert. Check `C:\Windows\Logs\CBS\CBS.log` and `C:\Windows\SoftwareDistribution\ReportingEvents.log` periodically if updates seem slow.
 
-6. **Keep a Linux USB SSD as a safety net.** Ubuntu as default boot with `efibootmgr --bootnext` for Windows means you always have SSH access even when Windows is broken. You can mount NTFS, run DISM offline, fix boot records, and inspect CBS logs. Never change the default boot order back to Windows — always use `--bootnext` for one-shot Windows boots.
+### For homelab builders
 
-7. **SSH to Windows requires upfront investment.** Set PowerShell as default shell, install busybox for coreutils, add tools to PATH, set `LocalAccountTokenFilterPolicy=1` for remote admin. Without this, every command fights escaping issues.
+7. **Keep a Linux USB SSD as a safety net.** Ubuntu as default boot with `efibootmgr --bootnext` for Windows means you always have SSH access even when Windows is broken. You can mount NTFS, run DISM offline, fix boot records, and inspect CBS logs. Never change the default boot order back to Windows — always use `--bootnext` for one-shot Windows boots. A USB SATA SSD found in a drawer became the most critical piece of infrastructure in this recovery.
 
-8. **HDMI capture on macOS is unreliable for long sessions.** USB capture cards drop out after ~10 minutes. Use a dedicated IPKVM device or route capture through a Linux node.
+8. **Build the IPKVM before you need it.** Having eyes (HDMI capture) and hands (USB HID keyboard) during boot screens, BIOS, and WinPE is the difference between "wait for the human" and "fix it now." At $11–37, there's no excuse not to have one.
 
-9. **Build the IPKVM before you need it.** Having eyes (HDMI capture) and hands (USB HID keyboard) during boot screens, BIOS, and WinPE is the difference between "wait for the human" and "fix it now." At $11–37, there's no excuse not to have one.
+9. **SSH to Windows requires upfront investment.** Set PowerShell as default shell, install busybox for coreutils, add tools to PATH, set `LocalAccountTokenFilterPolicy=1` for remote admin. Do this before you need it, not during a recovery.
 
-## On Agentic Philosophy
+10. **HDMI capture on macOS is unreliable for long sessions.** USB capture cards drop out after ~10 minutes. Use a dedicated IPKVM device or route capture through a Linux node that won't go to sleep.
 
-Back in secondary school, I got myself a home computer for the explicit purpose of having a machine I could experiment on freely — no locked-down group policies, no restrictions on what I could install or break. That same philosophy extends to how I work with AI agents: give them a real environment with real access, and let them fight real battles.
+## On Agentic Operations
 
-This project was built under that approach. The agent had full SSH access, root on Linux nodes, admin on Windows, hardware control via IPKVM, and the trust to operate overnight while I was in another city. The constraint wasn't permissions — it was judgement. Don't break what you can't physically reach to fix.
+This project was built under an unconventional trust model: give the agent a real environment with real access, and let it fight real battles.
+
+The agent had full SSH access, root on Linux nodes, admin on Windows, hardware control via IPKVM, and the latitude to operate overnight while the human was in another city. The constraint wasn't permissions — it was judgement. Don't break what you can't physically reach to fix.
+
+Back in secondary school, I got myself a home computer for the explicit purpose of having a machine I could experiment on freely — no locked-down group policies, no restrictions on what I could install or break. That same philosophy extends to AI agents: lock them down and you get lock-down results. The agent that can read a CBS log, cross-reference it with a boot crash dump, piece together a 3-layer root cause chain, write ESP32 firmware from scratch, flash it over WiFi, and type recovery commands to a broken Windows machine — that agent needs room to work.
+
+The practical lesson: "low guards, high trust" only works if you have a safety net. Ubuntu as default boot was the safety net here. The agent could reboot Windows aggressively because there was always a fallback. Hardware independence — remote keyboard, remote screen — meant the human never needed to be present. The overnight session produced more progress than any number of supervised sessions would have.
+
+**What made agentic recovery possible:**
+- SSH to both OSes (primary + fallback)
+- Visual access to boot screens (IPKVM eyes)
+- Keyboard at every stage, including pre-boot (IPKVM hands)
+- Persistent task tracking across reboots
+- The agent reading and interpreting its own error logs without guidance
+
+**What would have blocked it:**
+- Requiring human approval for every reboot
+- No fallback OS (one bad reboot = no more access)
+- Interactive-only recovery tools (no SSH equivalent)
+- Restricted filesystem access (couldn't read CBS logs)
+
+The IPKVM was not a nice-to-have. It was the difference between a recovery that took one overnight session and one that required the human to fly back home.
 
 ## Key Files
 
 ```
 esp32-hid/                  ESP32-S3 USB HID keyboard firmware (PlatformIO)
   src/main.cpp              WiFi TCP + OTA + serial, USB keyboard emulation
-  platformio.ini            Board config for YD-ESP32-23 (ESP32-S3-WROOM-1)
+  platformio.ini            Board config for YD-ESP32-S3 (ESP32-S3-WROOM-1)
 docs/
   offline-update-guide.md   DISM offline update via USB boot or WinRE
 archive/
